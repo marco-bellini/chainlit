@@ -47,15 +47,18 @@ class SQLAlchemyDataLayer(BaseDataLayer):
         odbc_str: Optional[str] = None,
         access_token: Optional[str] = None,
         use_token_auth: bool = False,
-    ):
+        custom_connection_string: str = None,
+    ):  
         self._conninfo = conninfo
         self.user_thread_limit = user_thread_limit
         self.show_logger = show_logger
         ssl_args = {}
         # Azure SQL token auth support
         if use_token_auth and odbc_str and access_token:
-            connection_string = f"mssql+pyodbc:///?odbc_connect={urllib.parse.quote_plus(odbc_str)}"
-
+            if custom_connection_string is None:
+                connection_string = f"mssql+pyodbc:///?odbc_connect={urllib.parse.quote_plus(odbc_str)}"
+            else:
+                connection_string = custom_connection_string
             def connect_with_token():
                 conn = pyodbc.connect(odbc_str, attrs_before={1256: access_token})  # 1256 = SQL_COPT_SS_ACCESS_TOKEN
                 return conn
