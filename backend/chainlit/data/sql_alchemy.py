@@ -4,12 +4,13 @@ import uuid
 from dataclasses import asdict
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+import struct
 
 import aiofiles
 import aiohttp
 import pyodbc
 import urllib.parse
-from sqlalchemy import text
+from sqlalchemy import text, event
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
@@ -36,6 +37,11 @@ if TYPE_CHECKING:
     from chainlit.step import StepDict
 
 
+def process_token(token):
+    token_bytes = token.encode("utf-16-le")
+    token_struct = struct.pack(f"<I{len(token_bytes)}s", len(token_bytes), token_bytes)
+    return token_struct
+
 class SQLAlchemyDataLayer(BaseDataLayer):
     def __init__(
         self,
@@ -47,7 +53,7 @@ class SQLAlchemyDataLayer(BaseDataLayer):
         odbc_str: Optional[str] = None,
         access_token: Optional[str] = None,
         use_token_auth: bool = False,
-        custom_connection_string: str = None,
+        get_access_token: Optional[callable] = None,
     ):  
         self._conninfo = conninfo
         self.user_thread_limit = user_thread_limit
@@ -55,18 +61,24 @@ class SQLAlchemyDataLayer(BaseDataLayer):
         ssl_args = {}
         # Azure SQL token auth support
         if use_token_auth and odbc_str and access_token:
-            if custom_connection_string is None:
-                connection_string = f"mssql+pyodbc:///?odbc_connect={urllib.parse.quote_plus(odbc_str)}"
-            else:
-                connection_string = custom_connection_string
-            def connect_with_token():
-                conn = pyodbc.connect(odbc_str, attrs_before={1256: access_token})  # 1256 = SQL_COPT_SS_ACCESS_TOKEN
-                return conn
+            if not get_access_token:
+                raise ValueError("get_access_token function must be supplied when use_token_auth is True")
 
+            connection_string = f"mssql+pyodbc:///?odbc_connect={urllib.parse.quote_plus(odbc_str)}"
+
+            def connect_with_token():
+                token = get_access_token()  # User-supplied function!
+                # 1256 = SQL_COPT_SS_ACCESS_TOKEN
+                return pyodbc.connect(
+                    odbc_str,
+                    attrs_before={1256: process_token(token)}
+                )
+            
             self.engine: AsyncEngine = create_async_engine(
                 connection_string,
                 connect_args={"creator": connect_with_token},
             )
+ 
         else:
             if ssl_require:
                 # Create an SSL context to require an SSL connection
@@ -77,6 +89,8 @@ class SQLAlchemyDataLayer(BaseDataLayer):
             self.engine: AsyncEngine = create_async_engine(
                 self._conninfo, connect_args=ssl_args
             )
+            
+
         self.async_session = sessionmaker(
             bind=self.engine, expire_on_commit=False, class_=AsyncSession
         )  # type: ignore
