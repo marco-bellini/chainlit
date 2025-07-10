@@ -1,5 +1,6 @@
 import uuid
 from pathlib import Path
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 from sqlalchemy import text
@@ -216,3 +217,41 @@ async def test_delete_thread(test_user: User, data_layer: SQLAlchemyDataLayer):
     await data_layer.delete_thread("test_thread")
     thread = await data_layer.get_thread("test_thread")
     assert thread is None
+
+
+def test_token_injected_every_time():
+    odbc_str = "Driver={Fake};Server=fake.database;Database=mock;"
+    token_calls = []
+
+    def fake_get_access_token():
+        token = f"token{len(token_calls)}"
+        token_calls.append(token)
+        return token
+
+    # Patch pyodbc.connect and (CRUCIALLY) patch create_async_engine where it's used
+    with (
+        patch("pyodbc.connect", autospec=True) as mock_connect,
+        patch("chainlit.data.sql_alchemy.create_async_engine") as mock_async_engine,
+    ):
+        mock_async_engine.return_value = MagicMock()
+
+        layer = SQLAlchemyDataLayer(
+            conninfo="mssql+pyodbc:///?odbc_connect=fake",
+            odbc_str=odbc_str,
+            use_token_auth=True,
+            get_access_token=fake_get_access_token,
+        )
+
+        # Now call your connection logic twice
+        layer.connect_with_token()
+        layer.connect_with_token()
+
+    assert token_calls == ["token0", "token1"]
+    expected_attrs1 = {1256: b"\x0c\x00\x00\x00t\x00o\x00k\x00e\x00n\x000\x00"}
+    expected_attrs2 = {1256: b"\x0c\x00\x00\x00t\x00o\x00k\x00e\x00n\x001\x00"}
+    mock_connect.assert_has_calls(
+        [
+            call(odbc_str, attrs_before=expected_attrs1),
+            call(odbc_str, attrs_before=expected_attrs2),
+        ]
+    )
